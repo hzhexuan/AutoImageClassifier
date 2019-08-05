@@ -90,6 +90,7 @@ class ImageClassifier():
         self.init_channels_search = None
         self.image_size = self.train_input.shape[2]
         print("Image size is:", self.image_size)
+        print("Classes frequence is:", self.frequence)
         print("Mean value is:", self.mean)
         print("std is:", self.std)
     
@@ -111,16 +112,17 @@ class ImageClassifier():
         transforms.Normalize(self.mean/255, self.std/255),])
         return transform(input)
       
-    def fit(self, seed=0, gpu=0, lr=0.025, weight_decay=3e-4, momentum=0.9, 
+    def fit(self, seed=0, lr=0.025, weight_decay=3e-4, momentum=0.9, 
             batch_size=64, epochs=50, learning_rate_min=0.001, arch_learning_rate=3e-4,
             arch_weight_decay=1e-3, unrolled=True, report_freq=50, grad_clip=5, 
             method="DARTS", num_reduction=2, init_channels_search=16, num_layers_search = 8):
+      
       self.init_channels_search = init_channels_search
       self.num_layers_search = num_layers_search
       if not torch.cuda.is_available():
         logging.info('no gpu device available')
         sys.exit(1)
-
+      gpu = 0
       np.random.seed(seed)
       torch.cuda.set_device(gpu)
       cudnn.benchmark = True
@@ -134,7 +136,10 @@ class ImageClassifier():
       test_data = MyDataset(self.test_input, self.test_target, self.transform_test)
       
       if(method == "DARTS"):
-          model = Network_DARTS(self.init_channels_search, self.num_class, self.num_layers_search, criterion, num_reduction = num_reduction)
+          model = Network_DARTS(self.init_channels_search, 
+                                self.num_class, self.num_layers_search, 
+                                criterion, num_reduction = num_reduction, 
+                                input_size = self.image_size)
           model = model.cuda()
           logging.info("param size = %fMB", count_parameters_in_MB(model))
         
@@ -174,14 +179,16 @@ class ImageClassifier():
             print(F.softmax(model.alphas_normal, dim=-1))
             print(F.softmax(model.alphas_reduce, dim=-1))  
             # training
-            train_acc, train_obj = train_DARTS(train_queue, valid_queue, model, architect,
-                                         criterion, optimizer, lr, unrolled, report_freq,
-                                         grad_clip)
+            train_acc, train_obj = train_DARTS(train_queue, valid_queue, 
+                                               model, architect, criterion, 
+                                               optimizer, lr, unrolled, 
+                                               report_freq, grad_clip)
             logging.info('train_acc %f', train_acc)
         
             # validation
             with torch.no_grad():
-                valid_acc, valid_obj = infer_DARTS(valid_queue, model, criterion, report_freq)
+                valid_acc, valid_obj = infer_DARTS(valid_queue, model, 
+                                                   criterion, report_freq)
             logging.info('valid_acc %f', valid_acc)
             save(model, os.path.join(self.save, 'weights.pt'))
             
@@ -205,7 +212,8 @@ class ImageClassifier():
               pin_memory=True, num_workers=2)
           
           model = Network_SF(self.init_channels_search, self.num_class, 
-                                          self.num_layers_search, criterion, num_reduction = num_reduction)
+                                          self.num_layers_search, criterion, 
+                                          num_reduction = num_reduction, input_size = self.image_size)
           model.cuda()
           logging.info("param size = %fMB", count_parameters_in_MB(model))
           
@@ -225,8 +233,9 @@ class ImageClassifier():
             print(F.softmax(model.alphas_normal, dim = -1))
             print(F.softmax(model.alphas_reduce, dim = -1))
             # training
-            train_acc, train_obj = train_SF(train_queue, valid_queue, model, criterion, 
-                                         optimizer, optimizer_arc, report_freq, grad_clip)
+            train_acc, train_obj = train_SF(train_queue, valid_queue, 
+                                            model, criterion, optimizer, 
+                                            optimizer_arc, report_freq, grad_clip)
             logging.info('train_acc %f %f', train_obj, train_acc)
             # validation
             with torch.no_grad():
@@ -254,7 +263,9 @@ class ImageClassifier():
               pin_memory=True, num_workers=2)
           
           model = Network_RAM(self.init_channels_search, self.num_class, 
-                                          self.num_layers_search, criterion, num_reduction = num_reduction)
+                                          self.num_layers_search, criterion, 
+                                          num_reduction = num_reduction, 
+                                          input_size = self.image_size)
           model.cuda()
           logging.info("param size = %fMB", count_parameters_in_MB(model))
           
@@ -289,10 +300,11 @@ class ImageClassifier():
       logging.info('Final genotype = %s', self.genotype)
       torch.cuda.empty_cache()
     
-    def finalfit(self, genotype=None, seed=0, gpu=0, init_channels=36, layers=20, 
+    def finalfit(self, genotype=None, multigpu=False, seed=0, init_channels=36, layers=20, 
                   lr=0.025, momentum=0.9, weight_decay=3e-4, batch_size=96, 
                   epochs=600, drop_path_prob=0.2, auxiliary=True, 
                   auxiliary_weight=0.4, grad_clip=5, report_freq=50, num_reduction=2):
+      gpu = 0
       if not torch.cuda.is_available():
         logging.info('no gpu device available')
         sys.exit(1)
@@ -303,6 +315,7 @@ class ImageClassifier():
           genotype = self.genotype
       else:
           self.genotype = genotype
+      
       self.finalfit_init_channels = init_channels
       self.finalfit_layers = layers
       self.num_reduction = num_reduction
@@ -315,10 +328,19 @@ class ImageClassifier():
       torch.cuda.manual_seed(seed)
       logging.info('gpu device = %d' % gpu)
       
-      if(self.image_size != 32 or num_reduction != 3):
+      if((self.image_size != 32 and self.image_size != 224) or num_reduction != 3):
           auxiliary = False
-      model = Network(self.finalfit_init_channels, self.num_class, self.finalfit_layers, auxiliary, genotype, num_reduction = self.num_reduction)
-      model = model.cuda()
+      
+      model = Network(self.finalfit_init_channels, self.num_class, 
+                      self.finalfit_layers, auxiliary, genotype, 
+                      num_reduction = self.num_reduction, 
+                      input_size = self.image_size)
+      
+      if(multigpu == True):
+          model = nn.DataParallel(model).cuda()
+      else:
+          model = model.cuda()
+      
       logging.info("param size = %fMB", count_parameters_in_MB(model))
       criterion = self.criterion.cuda()
       optimizer = torch.optim.SGD(
@@ -336,14 +358,17 @@ class ImageClassifier():
     
       valid_queue = torch.utils.data.DataLoader(
         test_data, batch_size=batch_size, shuffle=False, pin_memory=True, num_workers=4)
-    
-      scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, float(epochs))
+      
+      if(epochs != 0):
+          scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, float(epochs))
       
       best_recall = 0
-      for epoch in range(epochs):
+      current_epoch = -1
+      is_best = False
+      for current_epoch in range(epochs):
         scheduler.step()
-        logging.info('epoch %d lr %e', epoch, scheduler.get_lr()[0])
-        model.drop_path_prob = drop_path_prob * epoch / epochs
+        logging.info('epoch %d lr %e', current_epoch, scheduler.get_lr()[0])
+        model.drop_path_prob = drop_path_prob * current_epoch / epochs
         train_acc, train_obj = finalfit_train(train_queue, model, criterion, 
                                      optimizer, auxiliary, auxiliary_weight, grad_clip, report_freq)
         logging.info('train_acc %f', train_acc)
@@ -363,7 +388,7 @@ class ImageClassifier():
           np.savetxt(self.save + "/confusion_matrix.txt", np.uint8(confusion_matrix), fmt = "%i")
     
       save_checkpoint({
-        'epoch': epoch + 1,
+        'epoch': current_epoch + 1,
         'state_dict': model.state_dict(),
         'best_recall': best_recall,
         'optimizer' : optimizer.state_dict(),
@@ -386,7 +411,10 @@ class ImageClassifier():
     def ToKeras(self, output_name, path=None, genotype=None, init_channels=None, layers=None):
         
         if(path == None):
-            path = self.path() + "/model_best.pth.tar"
+            if(os.path.exists(self.path() + "/model_best.pth.tar")):
+                path = self.path() + "/model_best.pth.tar"
+            else:
+                path = self.path() + "/checkpoint.pth.tar"
             if(self.finalfit_init_channels == None or self.finalfit_layers == None or self.genotype == None):
                 raise Exception("Can not find finalfit_init_channels, finalfit_layers or genotype in ImageClassifier, run ImageClassifier.finalfit() first")
             init_channels = self.finalfit_init_channels
@@ -397,7 +425,9 @@ class ImageClassifier():
         elif(init_channels == None or layers == None or genotype == None):
             raise Exception("Should indicate init_channels, layers and genotype when a specific model path is given")
         
-        model = Network_ToKeras(init_channels, self.num_class, layers, genotype=genotype, num_reduction=self.num_reduction)
+        model = Network_ToKeras(init_channels, self.num_class, layers, 
+                                genotype=genotype, num_reduction = self.num_reduction, 
+                                input_size = self.image_size)
         checkpoint = torch.load(path)
         model.load_state_dict(checkpoint['state_dict'], strict = False)
         model.eval()

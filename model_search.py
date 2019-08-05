@@ -59,7 +59,7 @@ class Cell_DARTS(nn.Module):
 
 class Network_DARTS(nn.Module):
 
-  def __init__(self, C, num_classes, layers, criterion, steps=4, multiplier=4, stem_multiplier=3, num_reduction=2):
+  def __init__(self, C, num_classes, layers, criterion, steps=4, multiplier=4, stem_multiplier=3, num_reduction=2, input_size=32):
     super(Network_DARTS, self).__init__()
     self.num_reduction = num_reduction
     num_reduction = int(num_reduction) + 1
@@ -70,15 +70,34 @@ class Network_DARTS(nn.Module):
     self._steps = steps
     self._multiplier = multiplier
 
-    C_curr = stem_multiplier*C
-    self.stem = nn.Sequential(
-      nn.Conv2d(3, C_curr, 3, padding=1, bias=False),
-      nn.BatchNorm2d(C_curr)
-    )
- 
-    C_prev_prev, C_prev, C_curr = C_curr, C_curr, C
+    self.input_size = input_size
+    if(self.input_size == 224):
+        self.stem0 = nn.Sequential(
+          nn.Conv2d(3, C // 2, kernel_size=3, stride=2, padding=1, bias=False),
+          nn.BatchNorm2d(C // 2),
+          nn.ReLU(inplace=True),
+          nn.Conv2d(C // 2, C, 3, stride=2, padding=1, bias=False),
+          nn.BatchNorm2d(C),
+        )
+    
+        self.stem1 = nn.Sequential(
+          nn.ReLU(inplace=True),
+          nn.Conv2d(C, C, 3, stride=2, padding=1, bias=False),
+          nn.BatchNorm2d(C),
+        )
+        C_prev_prev, C_prev, C_curr = C, C, C
+        reduction_prev = True
+    else:
+        stem_multiplier = 3
+        C_curr = stem_multiplier*C
+        self.stem = nn.Sequential(
+          nn.Conv2d(3, C_curr, 3, padding=1, bias=False),
+          nn.BatchNorm2d(C_curr)
+        )
+        C_prev_prev, C_prev, C_curr = C_curr, C_curr, C
+        reduction_prev = False
+    
     self.cells = nn.ModuleList()
-    reduction_prev = False
     for i in range(layers):
       if i in [j * layers//num_reduction for j in range(1, num_reduction)]:
         C_curr *= 2
@@ -96,13 +115,17 @@ class Network_DARTS(nn.Module):
     self._initialize_alphas()
     
   def new(self):
-    model_new = Network_DARTS(self._C, self._num_classes, self._layers, self._criterion, num_reduction = self.num_reduction).cuda()
+    model_new = Network_DARTS(self._C, self._num_classes, self._layers, self._criterion, num_reduction = self.num_reduction, input_size = self.input_size).cuda()
     for x, y in zip(model_new.arch_parameters(), self.arch_parameters()):
         x.data.copy_(y.data)
     return model_new
 
   def forward(self, input):
-    s0 = s1 = self.stem(input)
+    if(self.input_size == 224):
+       s0 = self.stem0(input)
+       s1 = self.stem1(s0) 
+    else:
+        s0 = s1 = self.stem(input)
     for i, cell in enumerate(self.cells):
       if cell.reduction:
         weights = F.softmax(self.alphas_reduce, dim=-1)
@@ -216,7 +239,7 @@ class Cell_SF(nn.Module):
 
 class Network_SF(nn.Module):
 
-  def __init__(self, C, num_classes, layers, criterion, steps=4, multiplier=4, stem_multiplier=3, num_reduction=2):
+  def __init__(self, C, num_classes, layers, criterion, steps=4, multiplier=4, stem_multiplier=3, num_reduction=2, input_size = 32):
     super(Network_SF, self).__init__()
     num_reduction = int(num_reduction) + 1
     self._C = C
@@ -225,16 +248,35 @@ class Network_SF(nn.Module):
     self._criterion = criterion
     self._steps = steps
     self._multiplier = multiplier
-
-    C_curr = stem_multiplier*C
-    self.stem = nn.Sequential(
-      nn.Conv2d(3, C_curr, 3, padding=1, bias=False),
-      nn.BatchNorm2d(C_curr)
-    )
- 
-    C_prev_prev, C_prev, C_curr = C_curr, C_curr, C
+    self.input_size = input_size
+    
+    if(self.input_size == 224):
+        self.stem0 = nn.Sequential(
+          nn.Conv2d(3, C // 2, kernel_size=3, stride=2, padding=1, bias=False),
+          nn.BatchNorm2d(C // 2),
+          nn.ReLU(inplace=True),
+          nn.Conv2d(C // 2, C, 3, stride=2, padding=1, bias=False),
+          nn.BatchNorm2d(C),
+        )
+    
+        self.stem1 = nn.Sequential(
+          nn.ReLU(inplace=True),
+          nn.Conv2d(C, C, 3, stride=2, padding=1, bias=False),
+          nn.BatchNorm2d(C),
+        )
+        C_prev_prev, C_prev, C_curr = C, C, C
+        reduction_prev = True
+    else:
+        stem_multiplier = 3
+        C_curr = stem_multiplier*C
+        self.stem = nn.Sequential(
+          nn.Conv2d(3, C_curr, 3, padding=1, bias=False),
+          nn.BatchNorm2d(C_curr)
+        )
+        C_prev_prev, C_prev, C_curr = C_curr, C_curr, C
+        reduction_prev = False
+    
     self.cells = nn.ModuleList()
-    reduction_prev = False
     for i in range(layers):
       if i in [j * layers//num_reduction for j in range(1, num_reduction)]:
         C_curr *= 2
@@ -255,7 +297,11 @@ class Network_SF(nn.Module):
 
   def forward(self, input, target):
     self.sampling()
-    s0 = s1 = self.stem(input)
+    if(self.input_size == 224):
+       s0 = self.stem0(input)
+       s1 = self.stem1(s0) 
+    else:
+        s0 = s1 = self.stem(input)
     for i, cell in enumerate(self.cells):
       if cell.reduction:
         operations = self.sample[:14]
@@ -323,7 +369,7 @@ class Network_SF(nn.Module):
 
 class Network_RAM(nn.Module):
 
-  def __init__(self, C, num_classes, layers, criterion, steps=4, multiplier=4, stem_multiplier=3, num_reduction=2):
+  def __init__(self, C, num_classes, layers, criterion, steps=4, multiplier=4, stem_multiplier=3, num_reduction=2, input_size = 32):
     super(Network_RAM, self).__init__()
     num_reduction = int(num_reduction) + 1
     self._C = C
@@ -332,16 +378,35 @@ class Network_RAM(nn.Module):
     self._criterion = criterion
     self._steps = steps
     self._multiplier = multiplier
-
-    C_curr = stem_multiplier*C
-    self.stem = nn.Sequential(
-      nn.Conv2d(3, C_curr, 3, padding=1, bias=False),
-      nn.BatchNorm2d(C_curr)
-    )
- 
-    C_prev_prev, C_prev, C_curr = C_curr, C_curr, C
+    self.input_size = input_size
+    
+    if(self.input_size == 224):
+        self.stem0 = nn.Sequential(
+          nn.Conv2d(3, C // 2, kernel_size=3, stride=2, padding=1, bias=False),
+          nn.BatchNorm2d(C // 2),
+          nn.ReLU(inplace=True),
+          nn.Conv2d(C // 2, C, 3, stride=2, padding=1, bias=False),
+          nn.BatchNorm2d(C),
+        )
+    
+        self.stem1 = nn.Sequential(
+          nn.ReLU(inplace=True),
+          nn.Conv2d(C, C, 3, stride=2, padding=1, bias=False),
+          nn.BatchNorm2d(C),
+        )
+        C_prev_prev, C_prev, C_curr = C, C, C
+        reduction_prev = True
+    else:
+        stem_multiplier = 3
+        C_curr = stem_multiplier*C
+        self.stem = nn.Sequential(
+          nn.Conv2d(3, C_curr, 3, padding=1, bias=False),
+          nn.BatchNorm2d(C_curr)
+        )
+        C_prev_prev, C_prev, C_curr = C_curr, C_curr, C
+        reduction_prev = False
+    
     self.cells = nn.ModuleList()
-    reduction_prev = False
     for i in range(layers):
       if i in [j * layers//num_reduction for j in range(1, num_reduction)]:
         C_curr *= 2
@@ -373,7 +438,11 @@ class Network_RAM(nn.Module):
     self.sampling()
     operations_reduce = self.sample[:self.num_k, 0]
     operations_normal = self.sample[self.num_k:, 0]
-    s0 = s1 = self.stem(input)
+    if(self.input_size == 224):
+       s0 = self.stem0(input)
+       s1 = self.stem1(s0) 
+    else:
+        s0 = s1 = self.stem(input)
     for i, cell in enumerate(self.cells):
       if cell.reduction:
         operations = operations_reduce
@@ -391,7 +460,11 @@ class Network_RAM(nn.Module):
         operations[i] = op
         operations_reduce = operations[:self.num_k]
         operations_normal = operations[self.num_k:]
-        s0 = s1 = self.stem(input)
+        if(self.input_size == 224):
+           s0 = self.stem0(input)
+           s1 = self.stem1(s0) 
+        else:
+            s0 = s1 = self.stem(input)
         for i, cell in enumerate(self.cells):
           if cell.reduction:
             operations = operations_reduce

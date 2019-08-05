@@ -109,22 +109,41 @@ class AuxiliaryHeadImageNet(nn.Module):
 
 class Network(nn.Module):
 
-  def __init__(self, C, num_classes, layers, auxiliary, genotype, num_reduction):
-    num_reduction = int(num_reduction)
+  def __init__(self, C, num_classes, layers, auxiliary, genotype, num_reduction, input_size):
+    num_reduction = int(num_reduction) + 1
     super(Network, self).__init__()
     self._layers = layers
     self._auxiliary = auxiliary
-
-    stem_multiplier = 3
-    C_curr = stem_multiplier*C
-    self.stem = nn.Sequential(
-      nn.Conv2d(3, C_curr, 3, padding=1, bias=False),
-      nn.BatchNorm2d(C_curr)
-    )
+    self.drop_path_prob = 0
+    self.input_size = input_size
     
-    C_prev_prev, C_prev, C_curr = C_curr, C_curr, C
+    if(self.input_size == 224):
+        self.stem0 = nn.Sequential(
+          nn.Conv2d(3, C // 2, kernel_size=3, stride=2, padding=1, bias=False),
+          nn.BatchNorm2d(C // 2),
+          nn.ReLU(inplace=True),
+          nn.Conv2d(C // 2, C, 3, stride=2, padding=1, bias=False),
+          nn.BatchNorm2d(C),
+        )
+    
+        self.stem1 = nn.Sequential(
+          nn.ReLU(inplace=True),
+          nn.Conv2d(C, C, 3, stride=2, padding=1, bias=False),
+          nn.BatchNorm2d(C),
+        )
+        C_prev_prev, C_prev, C_curr = C, C, C
+        reduction_prev = True
+    else:
+        stem_multiplier = 3
+        C_curr = stem_multiplier*C
+        self.stem = nn.Sequential(
+          nn.Conv2d(3, C_curr, 3, padding=1, bias=False),
+          nn.BatchNorm2d(C_curr)
+        )
+        C_prev_prev, C_prev, C_curr = C_curr, C_curr, C
+        reduction_prev = False
+    
     self.cells = nn.ModuleList()
-    reduction_prev = False
     for i in range(layers):
       if i in [j * layers//num_reduction for j in range(1, num_reduction)]:
         C_curr *= 2
@@ -142,10 +161,15 @@ class Network(nn.Module):
       self.auxiliary_head = AuxiliaryHead(C_to_auxiliary, num_classes)
     self.global_pooling = nn.AdaptiveAvgPool2d(1)
     self.classifier = nn.Linear(C_prev, num_classes)
+    self.drop_path_prob = 0
 
   def forward(self, input):
     logits_aux = None
-    s0 = s1 = self.stem(input)
+    if(self.input_size == 224):
+       s0 = self.stem0(input)
+       s1 = self.stem1(s0) 
+    else:
+        s0 = s1 = self.stem(input)
     for i, cell in enumerate(self.cells):
       s0, s1 = s1, cell(s0, s1, self.drop_path_prob)
       if i == 2*self._layers//3:
@@ -154,5 +178,4 @@ class Network(nn.Module):
     out = self.global_pooling(s1)
     logits = self.classifier(out.view(out.size(0),-1))
     return logits, logits_aux
-
 

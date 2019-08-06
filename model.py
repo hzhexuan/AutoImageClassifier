@@ -161,7 +161,6 @@ class Network(nn.Module):
       self.auxiliary_head = AuxiliaryHead(C_to_auxiliary, num_classes)
     self.global_pooling = nn.AdaptiveAvgPool2d(1)
     self.classifier = nn.Linear(C_prev, num_classes)
-    self.drop_path_prob = 0
 
   def forward(self, input):
     logits_aux = None

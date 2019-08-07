@@ -42,36 +42,41 @@ class MyDataset(Dataset):
 
 class CrossEntropyLabelSmooth(nn.Module):
 
-  def __init__(self, num_classes, epsilon, frequence):
+  def __init__(self, num_classes, epsilon, frequence, weighted = True):
     super(CrossEntropyLabelSmooth, self).__init__()
     self.num_classes = num_classes
     self.epsilon = epsilon
     self.logsoftmax = nn.LogSoftmax(dim=1)
     self.FREC = torch.Tensor(frequence).cuda()
+    self.weighted = weighted
     
   def forward(self, inputs, targets):
     log_probs = self.logsoftmax(inputs)
     targets = torch.zeros_like(log_probs).scatter_(1, targets.unsqueeze(1), 1)
     targets = (1 - self.epsilon) * targets + self.epsilon / self.num_classes
-    loss = (-targets * log_probs / self.num_classes / self.FREC).mean(0).sum()
+    if(self.weighted):
+        loss = (-targets * log_probs / self.num_classes / self.FREC).mean(0).sum()
+    else:
+        loss = -(targets * log_probs).mean(0).sum()
     return loss
 
 class ImageClassifier():
     
     def __init__(self, train_input, train_target, test_input, test_target,
-                label_smooth=0, cutout = 16, save="EXP"):
+                label_smooth=0, cutout = 16, save="EXP", weighted=True):
         #input images are supposed to be [num_samples, H, W, C]
         #targets are supposed to be one-hot, i.e.[num_samples, num_classes]
         self.train_input = train_input
         self.train_target = train_target
         self.test_input = test_input
         self.test_target = test_target
-          
+        
+        self.weighted = weighted
         self.mean = np.mean(self.train_input, axis = (0, 1, 2))
         self.std = np.std(self.train_input, axis = (0, 1, 2))
         self.frequence = classfrequence(self.train_target)
         self.num_class = self.train_target.shape[-1]
-        self.criterion = CrossEntropyLabelSmooth(self.num_class, label_smooth, self.frequence)
+        self.criterion = CrossEntropyLabelSmooth(self.num_class, label_smooth, self.frequence, weighted)
         self.cutout = cutout
         #create save dir
         self.save = 'search-{}-{}'.format(save, time.strftime("%Y%m%d-%H%M%S"))
@@ -362,7 +367,7 @@ class ImageClassifier():
       if(epochs != 0):
           scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(optimizer, float(epochs))
       
-      best_recall = 0
+      best_metric = 0
       current_epoch = -1
       is_best = False
       for current_epoch in range(epochs):
@@ -379,18 +384,25 @@ class ImageClassifier():
                                                                                        report_freq)
         logging.info('valid_acc, valid_precision, valid_recall: %f %f %f', 
                      valid_acc, precision, recall)
-        logging.info('best_recall %f', best_recall)
         
         is_best = False
-        if recall > best_recall:
-          best_recall = recall
-          is_best = True
-          np.savetxt(self.save + "/confusion_matrix.txt", np.uint8(confusion_matrix), fmt = "%i")
-    
+        if(self.weighted):
+            if recall > best_metric:
+              best_metric = recall
+              is_best = True
+              np.savetxt(self.save + "/confusion_matrix.txt", np.uint8(confusion_matrix), fmt = "%i")
+        else:
+            if valid_acc > best_metric:
+              best_metric = valid_acc
+              is_best = True
+              np.savetxt(self.save + "/confusion_matrix.txt", np.uint8(confusion_matrix), fmt = "%i")
+        
+        logging.info('best_metric %f', best_metric)
+        
       save_checkpoint({
         'epoch': current_epoch + 1,
         'state_dict': model.state_dict(),
-        'best_recall': best_recall,
+        'best_metric': best_metric,
         'optimizer' : optimizer.state_dict(),
         }, is_best, self.save)
     
@@ -408,8 +420,8 @@ class ImageClassifier():
     def finalfit_layers(self):
         return self.layers
     
-    def ToKeras(self, output_name, path=None, genotype=None, init_channels=None, layers=None):
-        
+    def load_model(self, output_name, path=None, genotype=None, init_channels=None, layers=None):
+
         if(path == None):
             if(os.path.exists(self.path() + "/model_best.pth.tar")):
                 path = self.path() + "/model_best.pth.tar"
@@ -430,6 +442,11 @@ class ImageClassifier():
                                 input_size = self.image_size)
         checkpoint = torch.load(path)
         model.load_state_dict(checkpoint['state_dict'], strict = False)
+        return model
+    
+    def ToKeras(self, output_name, path=None, genotype=None, init_channels=None, layers=None):
+        
+        model = self.load_model(output_name, path, genotype, init_channels, layers)
         model.eval()
         
         input_np = np.random.uniform(0, 1, (1, 3, 32, 32))
@@ -647,7 +664,6 @@ def infer_RAM(valid_queue, model, criterion, report_freq):
 def finalfit_train(train_queue, model, criterion, optimizer, auxiliary, auxiliary_weight, grad_clip, report_freq):
   objs = AvgrageMeter()
   top1 = AvgrageMeter()
-  top5 = AvgrageMeter()
   model.train()
 
   for step, (input, target) in enumerate(train_queue):
@@ -665,21 +681,19 @@ def finalfit_train(train_queue, model, criterion, optimizer, auxiliary, auxiliar
     nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
     optimizer.step()
 
-    prec1, prec5 = accuracy(logits, target, topk=(1, 5))
+    prec1 = accuracy(logits, target, topk=(1,))[0]
     n = input.size(0)
     objs.update(loss.data, n)
     top1.update(prec1.data, n)
-    top5.update(prec5.data, n)
 
     if step % report_freq == 0:
-      logging.info('train %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
+      logging.info('train %03d %e %f', step, objs.avg, top1.avg)
 
   return top1.avg, objs.avg
 
 def finalfit_infer(valid_queue, model, criterion, report_freq):
   objs = AvgrageMeter()
   top1 = AvgrageMeter()
-  top5 = AvgrageMeter()
   model.eval()
   y_true = np.zeros(1)
   y_pred = np.zeros(1)
@@ -691,13 +705,12 @@ def finalfit_infer(valid_queue, model, criterion, report_freq):
     y_pred = np.concatenate([y_pred, np.argmax(logits.data.cpu().numpy(), axis = -1)])
     loss = criterion(logits, target)
 
-    prec1, prec5 = accuracy(logits, target, topk=(1, 5))
+    prec1 = accuracy(logits, target, topk=(1,))[0]
     n = input.size(0)
     objs.update(loss.data, n)
     top1.update(prec1.data, n)
-    top5.update(prec5.data, n)
 
     if step % report_freq == 0:
-      logging.info('valid %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
+      logging.info('valid %03d %e %f', step, objs.avg, top1.avg)
 
   return 100 * precision_score(y_true[1:], y_pred[1:], average = "macro"), 100 * recall_score(y_true[1:], y_pred[1:], average = "macro"), confusion_matrix(y_true[1:], y_pred[1:]), top1.avg, objs.avg

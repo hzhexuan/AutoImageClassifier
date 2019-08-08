@@ -90,7 +90,7 @@ class ImageClassifier():
         self.genotype = None
         self.finalfit_init_channels = None
         self.finalfit_layers = None
-        self.num_reduction = None
+        self.num_reduction = 2
         self.num_layers_search = None
         self.init_channels_search = None
         self.image_size = self.train_input.shape[2]
@@ -390,15 +390,23 @@ class ImageClassifier():
             if recall > best_metric:
               best_metric = recall
               is_best = True
-              np.savetxt(self.save + "/confusion_matrix.txt", np.uint8(confusion_matrix), fmt = "%i")
+              np.save(self.save + "/confusion_matrix.npy", np.uint8(confusion_matrix), fmt = "%i")
         else:
             if valid_acc > best_metric:
               best_metric = valid_acc
               is_best = True
-              np.savetxt(self.save + "/confusion_matrix.txt", np.uint8(confusion_matrix), fmt = "%i")
+              np.save(self.save + "/confusion_matrix.npy", np.uint8(confusion_matrix), fmt = "%i")
         
         logging.info('best_metric %f', best_metric)
         
+        save_checkpoint({
+          'epoch': current_epoch + 1,
+          'state_dict': model.state_dict(),
+          'best_metric': best_metric,
+          'optimizer' : optimizer.state_dict(),
+          }, is_best, self.save)
+
+    
       save_checkpoint({
         'epoch': current_epoch + 1,
         'state_dict': model.state_dict(),
@@ -420,7 +428,7 @@ class ImageClassifier():
     def finalfit_layers(self):
         return self.layers
     
-    def load_model(self, output_name, path=None, genotype=None, init_channels=None, layers=None):
+    def load_model(self, path=None, genotype=None, init_channels=None, layers=None):
 
         if(path == None):
             if(os.path.exists(self.path() + "/model_best.pth.tar")):
@@ -446,7 +454,7 @@ class ImageClassifier():
     
     def ToKeras(self, output_name, path=None, genotype=None, init_channels=None, layers=None):
         
-        model = self.load_model(output_name, path, genotype, init_channels, layers)
+        model = self.load_model(path, genotype, init_channels, layers)
         model.eval()
         
         input_np = np.random.uniform(0, 1, (1, 3, 32, 32))
@@ -492,13 +500,13 @@ def train_DARTS(train_queue, valid_queue, model, architect, criterion, optimizer
     nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
     optimizer.step()
 
-    prec1, prec5 = accuracy(logits, target, topk=(1, 5))
+    prec1 = accuracy(logits, target, topk=(1,))[0]
+    n = input.size(0)
     objs.update(loss.data, n)
     top1.update(prec1.data, n)
-    top5.update(prec5.data, n)
 
     if step % report_freq == 0:
-      logging.info('train %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
+      logging.info('train %03d %e %f', step, objs.avg, top1.avg)
 
   return top1.avg, objs.avg
 
@@ -515,14 +523,13 @@ def infer_DARTS(valid_queue, model, criterion, report_freq):
     logits = model(input)
     loss = criterion(logits, target)
 
-    prec1, prec5 = accuracy(logits, target, topk=(1, 5))
+    prec1 = accuracy(logits, target, topk=(1,))[0]
     n = input.size(0)
     objs.update(loss.data, n)
     top1.update(prec1.data, n)
-    top5.update(prec5.data, n)
 
     if step % report_freq == 0:
-      logging.info('valid %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
+      logging.info('train %03d %e %f', step, objs.avg, top1.avg)
 
   return top1.avg, objs.avg
 
@@ -560,13 +567,14 @@ def train_SF(train_queue, valid_queue, model, criterion, optimizer, optimizer_ar
     nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
     optimizer.step()
     
-    prec1, prec5 = accuracy(logits, target, topk=(1, 5))
+    prec1 = accuracy(logits, target, topk=(1,))[0]
+    n = input.size(0)
     objs.update(loss.data, n)
     top1.update(prec1.data, n)
-    top5.update(prec5.data, n)
 
     if step % report_freq == 0:
-      logging.info('train %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
+      logging.info('train %03d %e %f', step, objs.avg, top1.avg)
+
   return top1.avg, objs.avg
 
 def infer_SF(valid_queue, model, criterion, report_freq):
@@ -581,14 +589,13 @@ def infer_SF(valid_queue, model, criterion, report_freq):
 
     loss, _, logits = model(input, target)
 
-    prec1, prec5 = accuracy(logits, target, topk=(1, 5))
+    prec1 = accuracy(logits, target, topk=(1,))[0]
     n = input.size(0)
     objs.update(loss.data, n)
     top1.update(prec1.data, n)
-    top5.update(prec5.data, n)
 
     if step % report_freq == 0:
-      logging.info('valid %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
+      logging.info('train %03d %e %f', step, objs.avg, top1.avg)
 
   return top1.avg, objs.avg
 
@@ -628,13 +635,14 @@ def train_RAM(train_queue, valid_queue, model, criterion, optimizer, optimizer_a
     nn.utils.clip_grad_norm_(model.parameters(), grad_clip)
     optimizer.step()
 
-    prec1, prec5 = accuracy(logits, target, topk=(1, 5))
+    prec1 = accuracy(logits, target, topk=(1,))[0]
+    n = input.size(0)
     objs.update(loss.data, n)
     top1.update(prec1.data, n)
-    top5.update(prec5.data, n)
 
     if step % report_freq == 0:
-      logging.info('train %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
+      logging.info('train %03d %e %f', step, objs.avg, top1.avg)
+    
   return top1.avg, objs.avg
 
 def infer_RAM(valid_queue, model, criterion, report_freq):
@@ -650,14 +658,13 @@ def infer_RAM(valid_queue, model, criterion, report_freq):
     logits = model(input)
     loss = criterion(logits, target)
 
-    prec1, prec5 = accuracy(logits, target, topk=(1, 5))
+    prec1 = accuracy(logits, target, topk=(1,))[0]
     n = input.size(0)
     objs.update(loss.data, n)
     top1.update(prec1.data, n)
-    top5.update(prec5.data, n)
 
     if step % report_freq == 0:
-      logging.info('valid %03d %e %f %f', step, objs.avg, top1.avg, top5.avg)
+      logging.info('train %03d %e %f', step, objs.avg, top1.avg)
 
   return top1.avg, objs.avg
 
@@ -712,5 +719,7 @@ def finalfit_infer(valid_queue, model, criterion, report_freq):
 
     if step % report_freq == 0:
       logging.info('valid %03d %e %f', step, objs.avg, top1.avg)
+      
+  print(confusion_matrix(y_true[1:], y_pred[1:]))
 
   return 100 * precision_score(y_true[1:], y_pred[1:], average = "macro"), 100 * recall_score(y_true[1:], y_pred[1:], average = "macro"), confusion_matrix(y_true[1:], y_pred[1:]), top1.avg, objs.avg

@@ -390,12 +390,12 @@ class ImageClassifier():
             if recall > best_metric:
               best_metric = recall
               is_best = True
-              np.save(self.save + "/confusion_matrix.npy", np.uint8(confusion_matrix), fmt = "%i")
+              np.save(self.save + "/confusion_matrix.npy", np.uint8(confusion_matrix))
         else:
             if valid_acc > best_metric:
               best_metric = valid_acc
               is_best = True
-              np.save(self.save + "/confusion_matrix.npy", np.uint8(confusion_matrix), fmt = "%i")
+              np.save(self.save + "/confusion_matrix.npy", np.uint8(confusion_matrix))
         
         logging.info('best_metric %f', best_metric)
         

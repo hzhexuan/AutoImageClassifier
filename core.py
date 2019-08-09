@@ -12,7 +12,7 @@ import torch.nn.functional as F
 import torchvision.datasets as dset
 import torch.backends.cudnn as cudnn
 import os
-from sklearn.metrics import precision_score, recall_score, confusion_matrix
+from sklearn.metrics import precision_score, recall_score, confusion_matrix, cohen_kappa_score
 from torch.autograd import Variable
 from .model_search import Network_DARTS, Network_SF, Network_RAM
 from .model import Network
@@ -308,7 +308,8 @@ class ImageClassifier():
     def finalfit(self, genotype=None, multigpu=False, seed=0, init_channels=36, layers=20, 
                   lr=0.025, momentum=0.9, weight_decay=3e-4, batch_size=96, 
                   epochs=600, drop_path_prob=0.2, auxiliary=True, 
-                  auxiliary_weight=0.4, grad_clip=5, report_freq=50, num_reduction=2):
+                  auxiliary_weight=0.4, grad_clip=5, report_freq=50, 
+                  num_reduction=2, metric = "recall"):
       gpu = 0
       if not torch.cuda.is_available():
         logging.info('no gpu device available')
@@ -379,24 +380,31 @@ class ImageClassifier():
         logging.info('train_acc %f', train_acc)
         with torch.no_grad():
             model.drop_path_prob = 0
-            precision, recall, confusion_matrix, valid_acc, valid_obj = finalfit_infer(valid_queue, 
+            K, precision, recall, confusion_matrix, valid_acc, valid_obj = finalfit_infer(valid_queue, 
                                                                                        model, criterion, 
                                                                                        report_freq)
         logging.info('valid_acc, valid_precision, valid_recall: %f %f %f', 
                      valid_acc, precision, recall)
         
         is_best = False
-        if(self.weighted):
+        if(metric == "recall"):
             if recall > best_metric:
               best_metric = recall
               is_best = True
               np.save(self.save + "/confusion_matrix.npy", np.uint8(confusion_matrix))
-        else:
+        elif(metric == "acc"):
             if valid_acc > best_metric:
               best_metric = valid_acc
               is_best = True
               np.save(self.save + "/confusion_matrix.npy", np.uint8(confusion_matrix))
-        
+        elif(metric == "QWK"):
+            if K > best_metric:
+              best_metric = K
+              is_best = True
+              np.save(self.save + "/confusion_matrix.npy", np.uint8(confusion_matrix))
+        else:
+            raise Exception("Metric not available")
+            
         logging.info('best_metric %f', best_metric)
         
         save_checkpoint({
@@ -720,6 +728,8 @@ def finalfit_infer(valid_queue, model, criterion, report_freq):
     if step % report_freq == 0:
       logging.info('valid %03d %e %f', step, objs.avg, top1.avg)
       
+  K = cohen_kappa_score(y_true[1:], y_pred[1:], weights="quadratic")
   print(confusion_matrix(y_true[1:], y_pred[1:]))
+  print(K)
 
-  return 100 * precision_score(y_true[1:], y_pred[1:], average = "macro"), 100 * recall_score(y_true[1:], y_pred[1:], average = "macro"), confusion_matrix(y_true[1:], y_pred[1:]), top1.avg, objs.avg
+  return K, 100 * precision_score(y_true[1:], y_pred[1:], average = "macro"), 100 * recall_score(y_true[1:], y_pred[1:], average = "macro"), confusion_matrix(y_true[1:], y_pred[1:]), top1.avg, objs.avg
